@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Predictive Maintenance Prototype</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+
+    <!-- Bootstrap 5 CDN -->
+    <link
+      href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css"
+      rel="stylesheet"
+    >
+
+    <style>
+        body {
+            background-color: #000;
+            color: #f8f9fa;
+        }
+        .card {
+            background-color: #0000;
+            border: 1px solid #3c87a5;
+        }
+        .form-label span.value {
+            font-weight: 600;
+            color: #ffc107;
+        }
+        .severity-High { color: #ff4d4f; font-weight: 600; }
+        .severity-Medium { color: #ffc107; font-weight: 600; }
+        .severity-Low { color: #52c41a; font-weight: 600; }
+        body{color:white;}
+        .form-label {
+            color: #4da6ff; /* Bluish tone */
+            font-weight: 600;
+            margin-bottom: 6px;
+            display: block;
+        }
+        
+        /* Slider container adjustments */
+        .slider-container {
+            padding-left: 15px;
+            padding-right: 15px;
+        }
+        
+        .form-range {
+            width: 90%; /* Reduced by 10% */
+            margin-left: auto;
+            margin-right: auto;
+        }
+        
+        /* Right column split */
+        .right-column {
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+        
+        .diagnostics-section {
+            flex: 1;
+            overflow-y: auto;
+            padding: 1rem;
+        }
+        
+        .image-section {
+            flex: 1;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            background-color: #000;
+            border-top: 1px solid #0000;
+        }
+        
+        .image-section img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        
+        /* Diagnostic Image Deck (replaced with single image display) */
+        .single-image-display {
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .single-image-display img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            border-radius: 8px;
+        }
+        
+        /* Responsive adjustments */
+        @media (max-width: 992px) {
+            .right-column {
+                min-height: 500px;
+            }
+            
+            .image-section {
+                min-height: 250px;
+            }
+        }
+        
+        @media (max-width: 576px) {
+            .slider-container {
+                padding-left: 5px;
+                padding-right: 5px;
+            }
+            
+            .form-range {
+                width: 100%;
+            }
+            
+            .right-column {
+                min-height: 400px;
+            }
+            
+            .image-section {
+                min-height: 200px;
+            }
+        }
+    </style>
+</head>
+<!-- Add TensorFlow.js -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+
+<script>
+/*
+Client-side 2-layer neural network diagnostic.
+Inputs:
+  [engine_temp, oil_pressure, battery_voltage, vibration_level, brake_wear, coolant_level, km_since_service]
+Outputs (7 independent probabilities - multi-label):
+  [Overheat, LowOilPressure, BatteryIssue, ExcessVibration, BrakeWear, LowCoolant, MaintenanceDue]
+
+Model architecture:
+  input -> Dense(16, relu) -> Dense(12, relu) -> Dense(7, sigmoid)
+*/
+(async function(){
+  // --- Utility: read values from DOM as numbers ---
+  function getParams() {
+    return {
+      engine_temp: Number(document.querySelector('input[name="engine_temp"]').value),
+      oil_pressure: Number(document.querySelector('input[name="oil_pressure"]').value),
+      battery_voltage: Number(document.querySelector('input[name="battery_voltage"]').value),
+      vibration_level: Number(document.querySelector('input[name="vibration_level"]').value),
+      brake_wear: Number(document.querySelector('input[name="brake_wear"]').value),
+      coolant_level: Number(document.querySelector('input[name="coolant_level"]').value),
+      km_since_service: Number(document.querySelector('input[name="km_since_service"]').value)
+    };
+  }
+
+  // --- Normalization (simple min-max per input based on slider ranges) ---
+  const normConfig = {
+    engine_temp: [40, 130],
+    oil_pressure: [0, 6],
+    battery_voltage: [10, 15],
+    vibration_level: [0, 2],
+    brake_wear: [0, 100],
+    coolant_level: [0, 100],
+    km_since_service: [0, 20000]
+  };
+  function normalizeVector(p) {
+    return [
+      (p.engine_temp - 40) / (130 - 40),
+      (p.oil_pressure - 0) / (6 - 0),
+      (p.battery_voltage - 10) / (15 - 10),
+      (p.vibration_level - 0) / (2 - 0),
+      (p.brake_wear - 0) / (100 - 0),
+      (p.coolant_level - 0) / (100 - 0),
+      (p.km_since_service - 0) / (20000 - 0)
+    ];
+  }
+
+  // --- Build model ---
+  function buildModel() {
+    const model = tf.sequential();
+    model.add(tf.layers.dense({units: 16, activation: 'relu', inputShape: [7]}));
+    model.add(tf.layers.dense({units: 12, activation: 'relu'}));
+    model.add(tf.layers.dense({units: 7, activation: 'sigmoid'})); // multi-label probabilities
+    model.compile({optimizer: tf.train.adam(0.01), loss: 'binaryCrossentropy', metrics: ['accuracy']});
+    return model;
+  }
+
+  // --- Create synthetic dataset using clear rule-based labels ---
+  // This gives the model something realistic to learn for the demo. Replace with real data later.
+  function generateSyntheticDataset(N=3000) {
+    const xs = [];
+    const ys = [];
+    for (let i=0;i<N;i++){
+      // sample sliders uniformly across their ranges
+      const engine_temp = 40 + Math.random() * 90; // 40-130
+      const oil_pressure = Math.random() * 6;
+      const battery_voltage = 10 + Math.random() * 5;
+      const vibration_level = Math.random() * 2;
+      const brake_wear = Math.random() * 100;
+      const coolant_level = Math.random() * 100;
+      const km_since_service = Math.random() * 20000;
+
+      // rule-based labels (used as training labels)
+      const overheat = engine_temp > 100 || (engine_temp>90 && coolant_level<40) ? 1 : 0;
+      const lowOil = oil_pressure < 1.0 || (oil_pressure<1.5 && km_since_service>10000) ? 1 : 0;
+      const battery = battery_voltage < 11 || battery_voltage > 14.8 ? 1 : 0;
+      const vibration = vibration_level > 0.8 || (vibration_level>0.5 && km_since_service>12000) ? 1 : 0;
+      const brake = brake_wear > 70 ? 1 : 0;
+      const lowCoolant = coolant_level < 30 ? 1 : 0;
+      const maintenance = km_since_service > 10000 || brake_wear > 60 || oil_pressure < 1.2 ? 1 : 0;
+
+      xs.push([
+        (engine_temp-40)/90,
+        oil_pressure/6,
+        (battery_voltage-10)/5,
+        vibration_level/2,
+        brake_wear/100,
+        coolant_level/100,
+        km_since_service/20000
+      ]);
+      ys.push([overheat, lowOil, battery, vibration, brake, lowCoolant, maintenance]);
+    }
+    return {xs: tf.tensor2d(xs), ys: tf.tensor2d(ys)};
+  }
+
+  // --- Train or load model ---
+  let model = buildModel();
+  // For a production demo, you may save/load weights. Here we train quickly at page load.
+  const dataset = generateSyntheticDataset(2500);
+  await model.fit(dataset.xs, dataset.ys, {
+    epochs: 25,
+    batchSize: 64,
+    shuffle: true,
+    callbacks: {
+      onEpochEnd: (epoch, logs) => {
+        // keep console short but useful
+        if ((epoch+1) % 5 === 0) console.log(`Epoch ${epoch+1} loss=${logs.loss.toFixed(4)}`);
+      }
+    }
+  });
+  // Free tensors created in dataset to keep memory tidy
+  dataset.xs.dispose();
+  dataset.ys.dispose();
+
+  // --- Map output index to diagnostic items and recommendations ---
+  const issueMeta = [
+    {key:'Overheat', reason: 'High engine temp or poor coolant', action: 'Check radiator, coolant level, thermostat, and fan operation.'},
+    {key:'Low Oil Pressure', reason: 'Oil pressure too low — possible leak or pump failure', action: 'Check oil level, filter, and oil pump; schedule oil system check.'},
+    {key:'Battery / Charging', reason: 'Battery voltage out of expected range', action: 'Inspect alternator and battery; test under load.'},
+    {key:'Excess Vibration', reason: 'High vibration magnitude — possible imbalance or bearing wear', action: 'Inspect mounts, bearings, and rotating assembly.'},
+    {key:'Brake Wear', reason: 'High brake pad wear', action: 'Replace brake pads; inspect rotors.'},
+    {key:'Low Coolant', reason: 'Coolant below recommended level', action: 'Top up coolant; inspect for leaks.'},
+    {key:'Maintenance Due', reason: 'Vehicle overdue for scheduled maintenance', action: 'Schedule full service.'}
+  ];
+  // Issue → image mapping (Flask static folder)
+  const issueImages = {
+     'Overheat': '/static/images/engine.png',
+    'Low Oil Pressure': '/static/images/oil.png',
+    'Battery / Charging': '/static/images/battery.png',
+    'Excess Vibration': '/static/images/vibration.png',
+    'Brake Wear': '/static/images/brake.png',
+    'Low Coolant': '/static/images/coolant.png',
+    'Maintenance Due': '/static/images/service.png',
+    
+    'Normal': '/static/images/normal.png'
+  };
+
+  // --- Utility: take probabilities array and produce issues with severity ---
+  function interpretProbs(probs) {
+    const issues = [];
+    for (let i=0;i<probs.length;i++){
+      const p = probs[i];
+      if (p < 0.15) continue; // ignore near-zero predictions to reduce noise
+      let severity = 'Low';
+      if (p >= 0.75) severity = 'High';
+      else if (p >= 0.4) severity = 'Medium';
+      // craft final issue object
+      issues.push({
+        component: issueMeta[i].key,
+        severity,
+        confidence: Math.round(p*100),
+        reason: issueMeta[i].reason,
+        action: issueMeta[i].action
+      });
+    }
+    // sort by severity & confidence
+    issues.sort((a,b) => {
+      const sevScore = s => s==='High'?3: s==='Medium'?2:1;
+      return (sevScore(b.severity) - sevScore(a.severity)) || (b.confidence - a.confidence);
+    });
+    return issues;
+  }
+
+  // --- DOM: wire form to run diagnostic client-side ---
+  const form = document.querySelector('form');
+  const diagnosticsContainer = document.getElementById('diagnostics-container');
+  const imageContainer = document.getElementById('image-container');
+
+  function renderIssues(issues) {
+    diagnosticsContainer.innerHTML = '';
+    if (issues.length === 0) {
+      const p = document.createElement('p');
+      p.className = 'text-secondary text-center mt-3';
+      p.innerText = 'No significant issues detected (probabilities low).';
+      diagnosticsContainer.appendChild(p);
+      return;
+    }
+    for (const issue of issues) {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'mb-3 border-bottom pb-2';
+      wrapper.innerHTML = `
+        <div class="d-flex justify-content-between">
+         <strong style="color: #fff34d;">${issue.component}</strong>
+         <span class="severity-${issue.severity}" >
+           ${issue.severity} (${issue.confidence}%)
+         </span>
+        </div>
+        <div class="small text-secondary" style="color: #f9ff4d;">
+         ${issue.reason}
+        </div>
+        <div class="small mt-1" style="color: #f9ff4d;">
+         <strong>Recommendation:</strong> ${issue.action}
+        </div>
+      `;
+      diagnosticsContainer.appendChild(wrapper);
+    }
+  }
+
+  function renderImage(issues) {
+    imageContainer.innerHTML = '';
+    
+    const primaryIssue = issues[0];
+    // Idle state - show normal.png
+    if (primaryIssue === undefined) {
+      const img = document.createElement('img');
+      img.src = issueImages['Normal'];
+      img.alt = "Normal Operation";
+      img.className = "img-fluid";
+      imageContainer.appendChild(img);
+      return;
+    }
+    
+    // Show highest priority issue
+    const imgPath = issueImages[primaryIssue.component];
+    
+    const img = document.createElement('img');
+    img.src = imgPath;
+    img.alt = primaryIssue.component;
+    img.className = "img-fluid";
+    imageContainer.appendChild(img);
+  }
+
+  // Intercept submit, run NN inference, and render
+  form.addEventListener('submit', async function(ev){
+    ev.preventDefault();
+    // update the visible span values (HTML inputs already do it thanks to oninput)
+    const params = getParams();
+    const input = tf.tensor2d([normalizeVector(params)]);
+    const preds = model.predict(input);
+    const probs = await preds.data(); // Float32Array length 7
+    input.dispose();
+    preds.dispose();
+    const issues = interpretProbs(Array.from(probs));
+    renderIssues(issues);
+    renderImage(issues);
+  });
+
+  // Optionally run once at load to show initial state
+  const initParams = getParams();
+  {
+    const input = tf.tensor2d([normalizeVector(initParams)]);
+    const preds = model.predict(input);
+    const probs = await preds.data();
+    input.dispose();
+    preds.dispose();
+    const issues = interpretProbs(Array.from(probs));
+    renderIssues(issues);
+    renderImage(issues);
+  }
+})();
+</script>
+
+<body>
+<div class="container py-4">
+    <h1 class="mb-3">Vehicle Health – Diagnostic Prototype</h1>
+    <p class="text-secondary mb-4">
+        Adjust the sliders to simulate ECU values. The system will infer potential issues
+        and suggest possible problem areas – like a very simplified predictive maintenance model.
+    </p>
+
+    <div class="row g-4">
+        <div class="col-lg-6">
+            <div class="card p-3 position-relative">
+                <form method="post" class="slider-container">
+                    <!-- Engine temp -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Engine Temperature (°C):
+                            <span class="value" id="engine_temp_value">
+                                85
+                            </span>
+                        </label>
+                        <input type="range" class="form-range" min="40" max="130" step="1"
+                               name="engine_temp"
+                               value="85"
+                               oninput="document.getElementById('engine_temp_value').innerText = this.value">
+                    </div>
+
+                    <!-- Oil pressure -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Oil Pressure (bar):
+                            <span class="value" id="oil_pressure_value">
+                                3.0
+                            </span>
+                        </label>
+                        <input type="range" class="form-range" min="0" max="6" step="0.1"
+                               name="oil_pressure"
+                               value="3.0"
+                               oninput="document.getElementById('oil_pressure_value').innerText = this.value">
+                    </div>
+
+                    <!-- Battery voltage -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Battery / Charging Voltage (V):
+                            <span class="value" id="battery_voltage_value">
+                                12.6
+                            </span>
+                        </label>
+                        <input type="range" class="form-range" min="10" max="15" step="0.1"
+                               name="battery_voltage"
+                               value="12.6"
+                               oninput="document.getElementById('battery_voltage_value').innerText = this.value">
+                    </div>
+
+                    <!-- Vibration -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Vibration Level (g):
+                            <span class="value" id="vibration_level_value">
+                                0.5
+                            </span>
+                        </label>
+                        <input type="range" class="form-range" min="0" max="2" step="0.05"
+                               name="vibration_level"
+                               value="0.5"
+                               oninput="document.getElementById('vibration_level_value').innerText = this.value">
+                    </div>
+
+                    <!-- Brake wear -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Brake Pad Wear (%):
+                            <span class="value" id="brake_wear_value">
+                                30
+                            </span>
+                        </label>
+                        <input type="range" class="form-range" min="0" max="100" step="1"
+                               name="brake_wear"
+                               value="30"
+                               oninput="document.getElementById('brake_wear_value').innerText = this.value">
+                    </div>
+
+                    <!-- Coolant level -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Coolant Level (% of normal):
+                            <span class="value" id="coolant_level_value">
+                                75
+                            </span>
+                        </label>
+                        <input type="range" class="form-range" min="0" max="100" step="1"
+                               name="coolant_level"
+                               value="75"
+                               oninput="document.getElementById('coolant_level_value').innerText = this.value">
+                    </div>
+
+                    <!-- Km since service -->
+                    <div class="mb-3">
+                        <label class="form-label">
+                            Kilometers Since Last Service:
+                            <span class="value" id="km_since_service_value">
+                                8000
+                            </span>
+                        </label>
+                        <input type="range" class="form-range" min="0" max="20000" step="500"
+                               name="km_since_service"
+                               value="8000"
+                               oninput="document.getElementById('km_since_service_value').innerText = this.value">
+                    </div>
+
+                    <button type="submit" class="btn btn-warning w-100 fw-bold">
+                        Run Diagnostic
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <div class="col-lg-6">
+            <div class="card p-0 h-100">
+                <div class="right-column">
+                    <div class="diagnostics-section" id="diagnostics-container">
+                        <h4 class="mb-3" style="color: white; padding: 0.75rem 1rem 0;">Diagnostic Output</h4>
+                        <p class="text-secondary" style="padding: 0 1rem;">
+                            Adjust the sliders and click <strong>Run Diagnostic</strong> to see potential issues.
+                        </p>
+                    </div>
+                    <div class="image-section" id="image-container">
+                        <!-- Image will be rendered here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Bootstrap JS (optional for this simple page) -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
